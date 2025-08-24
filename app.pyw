@@ -1,6 +1,9 @@
 import tkinter as tk
 from tkinter import ttk
 from collections import deque
+from pynput import keyboard
+import threading
+import time
 
 BOARD_SIZE = 5
 CENTER = (2, 2)  # 0-based (row, col)
@@ -45,13 +48,13 @@ class TiltPuzzleSolver:
         occupied = set(barriers)  # only barriers & settled tokens matter
 
         # Order ensures correct blocking behavior
-        if dx == 1:      # down
+        if dx == 1:       # down
             order = sorted(all_pins, key=lambda rc: -rc[0])
-        elif dx == -1:   # up
+        elif dx == -1:    # up
             order = sorted(all_pins, key=lambda rc: rc[0])
-        elif dy == 1:    # right
+        elif dy == 1:     # right
             order = sorted(all_pins, key=lambda rc: -rc[1])
-        else:            # left
+        else:             # left
             order = sorted(all_pins, key=lambda rc: rc[1])
 
         for (r, c) in order:
@@ -132,12 +135,12 @@ class TiltPuzzleGUI:
         self.canvas.bind("<Button-3>", self.erase_token)
 
         self.mode = tk.StringVar(value="GREEN")
-        tk.Radiobutton(root, text="Green pin (1)",  variable=self.mode, value="GREEN").grid(row=1, column=0, sticky="w")
-        tk.Radiobutton(root, text="Blue pin (2)",   variable=self.mode, value="BLUE").grid(row=1, column=1, sticky="w")
+        tk.Radiobutton(root, text="Green pin (1)", variable=self.mode, value="GREEN").grid(row=1, column=0, sticky="w")
+        tk.Radiobutton(root, text="Blue pin (2)", variable=self.mode, value="BLUE").grid(row=1, column=1, sticky="w")
         tk.Radiobutton(root, text="Barrier (3)", variable=self.mode, value="BARRIER").grid(row=1, column=2, sticky="w")
         tk.Button(root, text="Solve", command=self.solve).grid(row=1, column=3, sticky="e")
         
-        # New "Clear board" button
+        # "Clear board" button
         self.clear_button = tk.Button(root, text="Clear board (c)", command=self.clear_board)
         self.clear_button.grid(row=1, column=4, sticky="e")
         
@@ -146,12 +149,27 @@ class TiltPuzzleGUI:
 
         self.draw_board()
 
-        # New key bindings
+        # Key bindings for GUI
         self.root.bind('<Key-1>', lambda event: self.set_mode("GREEN"))
         self.root.bind('<Key-2>', lambda event: self.set_mode("BLUE"))
         self.root.bind('<Key-3>', lambda event: self.set_mode("BARRIER"))
         self.root.bind('<Key-c>', lambda event: self.clear_board())
 
+        # Hotkey setup
+        self.hotkey_sequence = ""
+        self.is_sending = False
+        self.keyboard_controller = keyboard.Controller()
+        
+        # Use a Keyboard Listener for F6 hotkey
+        self.listener = keyboard.Listener(
+            on_press=self.on_key_press
+        )
+        self.listener_thread = threading.Thread(target=self.listener.start, daemon=True)
+        self.listener_thread.start()
+
+        # Add this line to handle cleanup when the app closes
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
     def set_mode(self, new_mode):
         self.mode.set(new_mode)
 
@@ -199,6 +217,8 @@ class TiltPuzzleGUI:
                 self.board[i][j] = EMPTY
         self.board[CENTER[0]][CENTER[1]] = HOLE
         self.draw_board()
+        self.status.set("Board cleared. Left-click to place; right-click to erase.")
+        self.hotkey_sequence = ""
 
     def popup_result(self, seq, states_tried):
         win = tk.Toplevel(self.root)
@@ -208,17 +228,69 @@ class TiltPuzzleGUI:
 
         if seq is None:
             ttk.Label(win, text="No solution found.").pack(padx=10, pady=10)
+            self.status.set("No solution found. Clear the board and try again.")
         else:
             ttk.Label(win, text=f"Shortest Solution: {seq}", font=("TkDefaultFont", 12, "bold")).pack(padx=10, pady=5)
             ttk.Label(win, text=f"Length: {len(seq)} moves").pack(padx=10, pady=2)
+            ttk.Label(win, text=f"Press F6 to automatically send the sequence.").pack(padx=10, pady=10)
+            self.status.set(f"Solution found. Press F6 to send.")
+            
         ttk.Label(win, text=f"States tried: {states_tried}").pack(padx=10, pady=5)
-
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=10)
 
     def solve(self):
+        self.status.set("Solving...")
+        self.root.update_idletasks() # Force GUI update
         solver = TiltPuzzleSolver(self.board)
         seq = solver.solve()
+        self.hotkey_sequence = seq if seq is not None else ""
         self.popup_result(seq, solver.states_tried)
+
+    # Hotkey methods
+    def on_key_press(self, key):
+        """Called for every key press to check for the F6 hotkey."""
+        try:
+            if key == keyboard.Key.f6:
+                self.send_solution_sequence()
+        except AttributeError:
+            pass
+
+    def send_solution_sequence(self):
+        """Sends the solution sequence using the keyboard controller."""
+        if self.is_sending:
+            return
+        
+        if not self.hotkey_sequence:
+            print("No solution to send.")
+            self.status.set("No solution found. Solve a board first.")
+            return
+        
+        self.is_sending = True
+        print(f"Sending solution: {self.hotkey_sequence}")
+        self.status.set(f"Sending solution: {self.hotkey_sequence}")
+        
+        key_map = {
+            "↑": keyboard.Key.up,
+            "↓": keyboard.Key.down,
+            "←": keyboard.Key.left,
+            "→": keyboard.Key.right,
+        }
+        
+        for key_char in self.hotkey_sequence:
+            key = key_map.get(key_char)
+            if key:
+                self.keyboard_controller.press(key)
+                self.keyboard_controller.release(key)
+                time.sleep(1.2) # delay between key presses
+                
+        self.is_sending = False
+        self.status.set("Solution sent. Ready for new board.")
+        print("Solution sequence sent.")
+
+    def on_closing(self):
+        """Stops the keyboard listener and closes the application."""
+        self.listener.stop()
+        self.root.destroy()
 
 if __name__ == "__main__":
     root = tk.Tk()
